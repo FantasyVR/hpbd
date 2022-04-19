@@ -1,7 +1,7 @@
 import taichi as ti
 
-ti.init(arch=ti.cuda)
-N = 200
+ti.init(arch=ti.cuda, dynamic_index=True)
+N = 2
 NV = (N + 1)**2
 NT = 2 * N**2
 NE = 2 * N * (N + 1) + N**2
@@ -18,6 +18,17 @@ MaxIte = 100
 
 paused = ti.field(ti.i32, shape=())
 
+# For Hierarchical PBD
+K = 2  # Particle restriction parameter
+adj_vertices = ti.Vector.field(
+    8, ti.i32,
+    shape=NV)  # Each element store neighbor's indices, adj means adjacent
+adj_len = ti.field(ti.i32, shape=NV)  # Store number of neighbors
+is_fine = ti.field(
+    ti.i32, shape=NV)  # Store whether a particle is coarse(-1) or fine(1)
+per_vertex_color = ti.Vector.field(3, ti.f32,
+                                   shape=NV)  # each particle's color
+
 
 @ti.kernel
 def init_pos():
@@ -26,7 +37,7 @@ def init_pos():
         pos[idx] = ti.Vector([i / N, 0.5, j / N])
         inv_mass[idx] = 1.0
     inv_mass[N] = 0.0
-    inv_mass[NV-1] = 0.0
+    inv_mass[NV - 1] = 0.0
 
 
 @ti.kernel
@@ -76,6 +87,90 @@ def init_edge():
 
 
 @ti.kernel
+def init_neighbors():
+    ti.loop_config(serialize=True)
+    for i in range(NE):
+        a, b = edge[i]
+        l1, l2 = adj_len[a], adj_len[b]
+        adj_vertices[a][l1] = b
+        adj_vertices[b][l2] = a
+        ti.atomic_add(adj_len[a], 1)
+        ti.atomic_add(adj_len[b], 1)
+
+    # max_adj_len = -1
+    # ti.loop_config(serialize=True)
+    # for i in range(NV):
+    #     print(i, "-th particle's coarse neighbor: ", adj_len[i])
+    #     if adj_len[i] > max_adj_len:
+    #         max_adj_len = adj_len[i]
+    # print("max adjacent neighbors: ", max_adj_len)
+
+
+"""
+compute number of coarse neighbors of particle p_idx
+"""
+
+
+@ti.func
+def compute_num_coarse_neighbor(p_idx):
+    neighbors = adj_vertices[p_idx]
+    # print("neighbors indices: ", neighbors)
+    num_neighbors = adj_len[p_idx]
+    # print("num of neighbors of ", p_idx, ": ", num_neighbors)
+    num_coarse_neighbor = 0
+    for idx in range(num_neighbors):
+        if is_fine[neighbors[idx]] < 0:  # coarse neighbor
+            num_coarse_neighbor += 1
+    return num_coarse_neighbor
+
+
+"""
+Test if one particle's all fine neighbors' coarse neighbors is larger than K.
+:return  True( all fine neighbors' coarse neighbors>K), False(otherwise).
+"""
+
+
+@ti.func
+def fine_neighbor_validation(p_idx):
+    neighbors = adj_vertices[p_idx]
+    num_neighbors = adj_len[p_idx]
+    is_validate = 1
+    for idx in range(num_neighbors):
+        neighbor_idx = neighbors[idx]
+        if is_fine[neighbor_idx] < 0:  # filter coarse neighbor
+            continue
+        # find the number of coarse neighbors of fine neighbor neighbor_idx
+        num_coarse_neighbor = compute_num_coarse_neighbor(neighbor_idx)
+        if num_coarse_neighbor <= K:
+            is_validate = 0
+    return is_validate
+
+
+@ti.kernel
+def particle_restriction():
+    ti.loop_config(serialize=True)
+    for i in range(NV):
+        nce = compute_num_coarse_neighbor(i)
+        # print(i, "-th particle's coarse neighbor: ", nce)
+        if nce >= K and fine_neighbor_validation(i):
+            is_fine[i] = 1
+
+
+@ti.kernel
+def init_particle_colors():
+    for i in range(NV):
+        if is_fine[i] > 0:  # fine particle
+            per_vertex_color[i] = ti.Vector([1.0, 1.0, 1.0])
+        else:  # coarse particle
+            per_vertex_color[i] = ti.Vector([1.0, 0.0, 0.0])
+
+
+@ti.kernel
+def constraint_restriction():
+    pass
+
+
+@ti.kernel
 def semi_euler():
     gravity = ti.Vector([0.0, -0.1, 0.0])
     for i in range(NV):
@@ -106,11 +201,13 @@ def update_vel():
         if inv_mass[i] != 0.0:
             vel[i] = (pos[i] - old_pos[i]) / h
 
+
 @ti.kernel
 def collision():
     for i in range(NV):
         if pos[i][2] < -2.0:
             pos[i][2] = 0.0
+
 
 def step():
     semi_euler()
@@ -120,10 +217,19 @@ def step():
     update_vel()
 
 
-init_pos()
-init_tri()
-init_edge()
+def init():
+    init_pos()
+    init_tri()
+    init_edge()
+    # For Hierarchical PBD
+    init_neighbors()
+    is_fine.fill(-1)  # init all particles as coarse
+    particle_restriction()
+    init_particle_colors()
+    constraint_restriction()
 
+
+init()
 window = ti.ui.Window("Display Mesh", (1024, 1024))
 canvas = window.get_canvas()
 scene = ti.ui.Scene()
@@ -148,7 +254,7 @@ while window.running:
     scene.set_camera(camera)
     scene.point_light(pos=(0.5, 1, 2), color=(1, 1, 1))
 
-    scene.mesh(pos, tri, color=(1.0,1.0,1.0), two_sided=True)
-    scene.particles(pos, radius=0.01, color=(0.6,0.0,0.0))
+    scene.mesh(pos, tri, color=(0.0, 1.0, 0.0), two_sided=True)
+    scene.particles(pos, radius=0.01, per_vertex_color=per_vertex_color)
     canvas.scene(scene)
     window.show()
