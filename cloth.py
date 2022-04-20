@@ -183,7 +183,7 @@ def init_particle_colors():
 def find_p_j(p_i, pos_np, neighbors_np, num_adjs, is_fine_np):
     neighbors = neighbors_np[p_i]
     neighbors_len = num_adjs[p_i]
-    cn = []
+    cn = []  # coarse neighbors' indices
     for i in range(neighbors_len):
         if is_fine_np[neighbors[i]] < 0:
             cn.append(neighbors[i])
@@ -195,12 +195,23 @@ def find_p_j(p_i, pos_np, neighbors_np, num_adjs, is_fine_np):
 
     nearest_neighbor = cn[0]
     min_dis = np.linalg.norm(pos_np[nearest_neighbor] - pos_np[p_i])
+    max_dis = min_dis
     for j in range(1, num_coarse_neighbors):
         distance = np.linalg.norm(pos_np[cn[j]] - pos_np[p_i])
         if distance < min_dis:
             nearest_neighbor = cn[j]
             min_dis = distance
-    return nearest_neighbor
+        if distance > max_dis:
+            max_dis = distance
+    # compute parents weights
+    w_ij = []
+    epsilon = 1.0e-6
+    for j in range(num_coarse_neighbors):
+        distance = np.linalg.norm(pos_np[cn[j]] - pos_np[p_i])
+        weight = 1.0 / (distance / max_dis + epsilon)
+        w_ij.append(weight)
+
+    return nearest_neighbor, cn, w_ij
 
 
 def remove_constraint(c_l1, c_l1_rl, p_i, p_j):
@@ -228,10 +239,15 @@ def constraint_restriction():
 
     c_l1 = c_l0_np
     c_l1_rl = c_l0_rl
+    fine_coarse_index_map = dict()
+    find_coarse_weight_map = dict()
     for p_i in range(NV):
         if is_fine_np[p_i] < 0:  # filter coarse particles
             continue
-        p_j = find_p_j(p_i, pos_np, adj_matrix, num_adjs, is_fine_np)
+        p_j, parents, parents_weights = find_p_j(p_i, pos_np, adj_matrix,
+                                                 num_adjs, is_fine_np)
+        fine_coarse_index_map[p_i] = np.asarray(parents)
+        find_coarse_weight_map[p_i] = np.asarray(parents_weights)
         adj_particles = adj_matrix[p_i]
         np_len = num_adjs[p_i]
         for k in range(np_len):
@@ -244,6 +260,7 @@ def constraint_restriction():
                 c_l1, c_l1_rl = remove_constraint(c_l1, c_l1_rl, p_i, p_k)
             else:  # p_k is not p_j's neighbor
                 c_l1, c_l1_rl = add_constraint(c_l1, c_l1_rl, p_k, p_j, pos_np)
+    return c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map
 
 
 @ti.kernel
@@ -271,6 +288,40 @@ def solve_constraints():
             pos[idx1] -= 0.5 * invM1 * l * gradient
 
 
+def solve_l1_constraint(c_l1, c_l1_rl, q_i, fine_coarse_index_map,
+                        find_coarse_weight_map):
+    for i in range(c_l1.shape[0]):
+        idx0, idx1 = c_l1[i]
+        invM0, invM1 = inv_mass[idx0], inv_mass[idx1]
+        dis = q_i[idx0] - q_i[idx1]
+        constraint = np.linalg.norm(dis) - c_l1_rl[i]
+        gradient = dis / np.linalg.norm(dis)
+        l = -constraint / (invM0 + invM1)
+        if invM0 != 0.0:
+            q_i[idx0] += 0.5 * invM0 * l * gradient
+        if invM1 != 0.0:
+            q_i[idx1] -= 0.5 * invM1 * l * gradient
+    # compute correction from l1 to l0
+    fine_particles = []
+    fine_corrections = []
+    positions = pos.to_numpy()
+    for fp in fine_coarse_index_map:
+        coarse_neighbors = fine_coarse_index_map[fp]
+        coarse_wights = find_coarse_weight_map[fp]
+        correction = np.zeros(shape=3, dtype=np.float32)
+        for idx, p in enumerate(coarse_neighbors):
+            correction += coarse_wights[idx] * (positions[p] - q_i[p])
+        fine_particles.append(fp)
+        fine_corrections.append(correction)
+    return np.asarray(fine_particles), np.asarray(fine_corrections)
+
+
+@ti.kernel
+def correction_l0(fp: ti.types.ndarray(), fc: ti.types.ndarray()):
+    for p in fp:
+        pos[p] += ti.Vector([fc[p, 0], fc[p, 1], fc[p, 2]])
+
+
 @ti.kernel
 def update_vel():
     for i in range(NV):
@@ -285,10 +336,14 @@ def collision():
             pos[i][2] = 0.0
 
 
-def step():
+def step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map):
     semi_euler()
     for i in range(MaxIte):
+        q_i = pos.to_numpy()
         solve_constraints()
+        fine_particles, fine_corrections = solve_l1_constraint(
+            c_l1, c_l1_rl, q_i, fine_coarse_index_map, find_coarse_weight_map)
+        correction_l0(fine_particles, fine_corrections)
         collision()
     update_vel()
 
@@ -302,10 +357,12 @@ def init():
     is_fine.fill(-1)  # init all particles as coarse
     particle_restriction()
     init_particle_colors()
-    constraint_restriction()
+    c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map = constraint_restriction(
+    )
+    return c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map
 
 
-init()
+c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map = init()
 window = ti.ui.Window("Display Mesh", (1024, 1024))
 canvas = window.get_canvas()
 scene = ti.ui.Scene()
@@ -323,7 +380,7 @@ while window.running:
         paused[None] = not paused[None]
 
     if not paused[None]:
-        step()
+        step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map)
         paused[None] = not paused[None]
 
     camera.track_user_inputs(window, movement_speed=0.003, hold_key=ti.ui.RMB)
