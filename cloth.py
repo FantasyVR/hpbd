@@ -1,7 +1,8 @@
 import taichi as ti
+import numpy as np
 
 ti.init(arch=ti.cuda, dynamic_index=True)
-N = 2
+N = 5
 NV = (N + 1)**2
 NT = 2 * N**2
 NE = 2 * N * (N + 1) + N**2
@@ -18,16 +19,24 @@ MaxIte = 100
 
 paused = ti.field(ti.i32, shape=())
 
-# For Hierarchical PBD
-K = 2  # Particle restriction parameter
-adj_vertices = ti.Vector.field(
-    8, ti.i32,
-    shape=NV)  # Each element store neighbor's indices, adj means adjacent
-adj_len = ti.field(ti.i32, shape=NV)  # Store number of neighbors
-is_fine = ti.field(
-    ti.i32, shape=NV)  # Store whether a particle is coarse(-1) or fine(1)
-per_vertex_color = ti.Vector.field(3, ti.f32,
-                                   shape=NV)  # each particle's color
+# <<<<<<<<<<<<<<< For Hierarchical PBD >>>>>>>>>>>>>>>>>
+# Particle restriction parameter
+K = 2
+# Each element store neighbor's indices, adj means adjacent
+adj_vertices = ti.Vector.field(8, ti.i32, shape=NV)
+# Store number of neighbors
+adj_len = ti.field(ti.i32, shape=NV)
+# Store whether a particle is coarse(-1) or fine(1)
+is_fine = ti.field(ti.i32, shape=NV)
+# each particle's color
+per_vertex_color = ti.Vector.field(3, ti.f32, shape=NV)
+
+# level 1 distance constraints particle indices
+c_l1 = ti.Vector.field(2, ti.i32, shape=NE)
+# level 1 distance constraints rest length
+rest_len_l1 = ti.field(ti.f32, shape=NE)
+# number of l1 constraints
+num_l1_c = ti.field(ti.i32, shape=())
 
 
 @ti.kernel
@@ -165,9 +174,76 @@ def init_particle_colors():
             per_vertex_color[i] = ti.Vector([1.0, 0.0, 0.0])
 
 
-@ti.kernel
+# @ti.func
+# def copy_from_l0_constraint():
+#     for i in range(NE):
+#         c_l1[i] = edge[i]
+
+
+def find_p_j(p_i, pos_np, neighbors_np, num_adjs, is_fine_np):
+    neighbors = neighbors_np[p_i]
+    neighbors_len = num_adjs[p_i]
+    cn = []
+    for i in range(neighbors_len):
+        if is_fine_np[neighbors[i]] < 0:
+            cn.append(neighbors[i])
+    num_coarse_neighbors = len(cn)
+    avg_position = np.zeros(3, dtype=np.float32)
+    for j in range(num_coarse_neighbors):
+        avg_position += pos_np[cn[j]]
+    avg_position /= num_coarse_neighbors
+
+    nearest_neighbor = cn[0]
+    min_dis = np.linalg.norm(pos_np[nearest_neighbor] - pos_np[p_i])
+    for j in range(1, num_coarse_neighbors):
+        distance = np.linalg.norm(pos_np[cn[j]] - pos_np[p_i])
+        if distance < min_dis:
+            nearest_neighbor = cn[j]
+            min_dis = distance
+    return nearest_neighbor
+
+
+def remove_constraint(c_l1, c_l1_rl, p_i, p_j):
+    for idx, c in enumerate(c_l1):
+        c_d1, c_d2 = c
+        if (c_d1 == p_i and c_d2 == p_j) or (c_d1 == p_j and c_d2 == p_i):
+            return np.delete(c_l1, idx, 0), np.delete(c_l1_rl, idx, 0)
+    return c_l1, c_l1_rl
+
+
+def add_constraint(c_l1, c_l1_rl, p_k, p_j, pos_np):
+    new_c_rest_len = np.linalg.norm(pos_np[p_k] - pos_np[p_j])
+    new_c_l1 = np.vstack([c_l1, np.array([p_k, p_j])])
+    new_c_l1_rl = np.append(c_l1_rl, new_c_rest_len)
+    return new_c_l1, new_c_l1_rl
+
+
 def constraint_restriction():
-    pass
+    pos_np = pos.to_numpy()
+    c_l0_np = edge.to_numpy()
+    c_l0_rl = rest_len.to_numpy()
+    adj_matrix = adj_vertices.to_numpy()
+    num_adjs = adj_len.to_numpy()
+    is_fine_np = is_fine.to_numpy()
+
+    c_l1 = c_l0_np
+    c_l1_rl = c_l0_rl
+    for p_i in range(NV):
+        if is_fine_np[p_i] < 0:  # filter coarse particles
+            continue
+        p_j = find_p_j(p_i, pos_np, adj_matrix, num_adjs, is_fine_np)
+        adj_particles = adj_matrix[p_i]
+        np_len = num_adjs[p_i]
+        for k in range(np_len):
+            p_k = adj_particles[k]
+            if p_k == p_j:
+                # remove c(p_i, p_j)
+                c_l1, c_l1_rl = remove_constraint(c_l1, c_l1_rl, p_i, p_j)
+            elif p_k in adj_matrix[p_j]:
+                # p_k is p_j's neighbor
+                c_l1, c_l1_rl = remove_constraint(c_l1, c_l1_rl, p_i, p_k)
+            else:  # p_k is not p_j's neighbor
+                c_l1, c_l1_rl = add_constraint(c_l1, c_l1_rl, p_k, p_j, pos_np)
 
 
 @ti.kernel
@@ -255,6 +331,6 @@ while window.running:
     scene.point_light(pos=(0.5, 1, 2), color=(1, 1, 1))
 
     scene.mesh(pos, tri, color=(0.0, 1.0, 0.0), two_sided=True)
-    scene.particles(pos, radius=0.01, per_vertex_color=per_vertex_color)
+    scene.particles(pos, radius=0.04, per_vertex_color=per_vertex_color)
     canvas.scene(scene)
     window.show()
