@@ -2,7 +2,7 @@ import taichi as ti
 import numpy as np
 
 ti.init(arch=ti.cuda, dynamic_index=True)
-N = 5
+N = 4
 NV = (N + 1)**2
 NT = 2 * N**2
 NE = 2 * N * (N + 1) + N**2
@@ -203,30 +203,43 @@ def find_p_j(p_i, pos_np, neighbors_np, num_adjs, is_fine_np):
             min_dis = distance
         if distance > max_dis:
             max_dis = distance
-    # compute parents weights
+    # compute normalized parents weights
     w_ij = []
     epsilon = 1.0e-6
+    sum_weight = 0.0
     for j in range(num_coarse_neighbors):
         distance = np.linalg.norm(pos_np[cn[j]] - pos_np[p_i])
         weight = 1.0 / (distance / max_dis + epsilon)
+        sum_weight += weight
         w_ij.append(weight)
+    for j in range(num_coarse_neighbors):
+        w_ij[j] /= sum_weight
 
     return nearest_neighbor, cn, w_ij
 
 
-def remove_constraint(c_l1, c_l1_rl, p_i, p_j):
+def remove_constraint(p_i, p_j, c_l1, c_l1_rl, adj_matrix, num_adjs):
     for idx, c in enumerate(c_l1):
         c_d1, c_d2 = c
         if (c_d1 == p_i and c_d2 == p_j) or (c_d1 == p_j and c_d2 == p_i):
-            return np.delete(c_l1, idx, 0), np.delete(c_l1_rl, idx, 0)
-    return c_l1, c_l1_rl
+            num_adjs[c_d1] -= 1
+            num_adjs[c_d2] -= 1
+            idx1, idx2 = np.where(adj_matrix[c_d1] == c_d2)[0][0], np.where(adj_matrix[c_d2] == c_d1)[0][0]
+            adj_matrix[c_d1][idx1:] = np.append(adj_matrix[c_d1, idx1+1:], np.array([-1]))
+            adj_matrix[c_d2][idx2:] = np.append(adj_matrix[c_d2, idx2+1:], np.array([-1]))
+            return np.delete(c_l1, idx, 0), np.delete(c_l1_rl, idx, 0), adj_matrix, num_adjs
+    return c_l1, c_l1_rl, adj_matrix, num_adjs
 
 
-def add_constraint(c_l1, c_l1_rl, p_k, p_j, pos_np):
+def add_constraint(p_k, p_j, c_l1, c_l1_rl, adj_matrix, num_adjs, pos_np):
     new_c_rest_len = np.linalg.norm(pos_np[p_k] - pos_np[p_j])
     new_c_l1 = np.vstack([c_l1, np.array([p_k, p_j])])
     new_c_l1_rl = np.append(c_l1_rl, new_c_rest_len)
-    return new_c_l1, new_c_l1_rl
+    num_adjs[p_k] += 1
+    num_adjs[p_j] += 1
+    adj_matrix[p_k][num_adjs[p_k]-1] = p_j
+    adj_matrix[p_j][num_adjs[p_j]-1] = p_k
+    return new_c_l1, new_c_l1_rl, adj_matrix, num_adjs
 
 
 def constraint_restriction():
@@ -248,18 +261,26 @@ def constraint_restriction():
                                                  num_adjs, is_fine_np)
         fine_coarse_index_map[p_i] = np.asarray(parents)
         find_coarse_weight_map[p_i] = np.asarray(parents_weights)
+
+    for p_i in range(NV):
+        if is_fine_np[p_i] < 0:  # filter coarse particles
+            continue
+        p_j, parents, parents_weights = find_p_j(p_i, pos_np, adj_matrix,
+                                                 num_adjs, is_fine_np)
         adj_particles = adj_matrix[p_i]
         np_len = num_adjs[p_i]
-        for k in range(np_len):
+        k  = 0
+        while k < np_len and adj_particles[k] != -1:
             p_k = adj_particles[k]
             if p_k == p_j:
                 # remove c(p_i, p_j)
-                c_l1, c_l1_rl = remove_constraint(c_l1, c_l1_rl, p_i, p_j)
+                c_l1, c_l1_rl, adj_matrix, num_adjs = remove_constraint(p_i, p_j, c_l1, c_l1_rl, adj_matrix, num_adjs)
             elif p_k in adj_matrix[p_j]:
                 # p_k is p_j's neighbor
-                c_l1, c_l1_rl = remove_constraint(c_l1, c_l1_rl, p_i, p_k)
+                c_l1, c_l1_rl, adj_matrix, num_adjs = remove_constraint(p_i, p_k, c_l1, c_l1_rl, adj_matrix, num_adjs)
             else:  # p_k is not p_j's neighbor
-                c_l1, c_l1_rl = add_constraint(c_l1, c_l1_rl, p_k, p_j, pos_np)
+                c_l1, c_l1_rl, adj_matrix, num_adjs = remove_constraint(p_i, p_k, c_l1, c_l1_rl, adj_matrix, num_adjs)
+                c_l1, c_l1_rl, adj_matrix, num_adjs = add_constraint(p_k, p_j, c_l1, c_l1_rl, adj_matrix, num_adjs, pos_np )
     return c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map
 
 
@@ -319,7 +340,8 @@ def solve_l1_constraint(c_l1, c_l1_rl, q_i, fine_coarse_index_map,
 @ti.kernel
 def correction_l0(fp: ti.types.ndarray(), fc: ti.types.ndarray()):
     for p in fp:
-        pos[p] += ti.Vector([fc[p, 0], fc[p, 1], fc[p, 2]])
+        if inv_mass[p] != 0.0:
+            pos[p] -= ti.Vector([fc[p, 0], fc[p, 1], fc[p, 2]])
 
 
 @ti.kernel
@@ -353,8 +375,9 @@ def init():
     init_tri()
     init_edge()
     # For Hierarchical PBD
-    init_neighbors()
     is_fine.fill(-1)  # init all particles as coarse
+    adj_vertices.fill(-1)
+    init_neighbors()
     particle_restriction()
     init_particle_colors()
     c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map = constraint_restriction(
