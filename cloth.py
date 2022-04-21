@@ -1,7 +1,7 @@
 import taichi as ti
 import numpy as np
 
-ti.init(arch=ti.cuda, dynamic_index=True)
+ti.init(arch=ti.cpu, dynamic_index=True)
 N = 4
 NV = (N + 1)**2
 NT = 2 * N**2
@@ -174,12 +174,6 @@ def init_particle_colors():
             per_vertex_color[i] = ti.Vector([1.0, 0.0, 0.0])
 
 
-# @ti.func
-# def copy_from_l0_constraint():
-#     for i in range(NE):
-#         c_l1[i] = edge[i]
-
-
 def find_p_j(p_i, pos_np, neighbors_np, num_adjs, is_fine_np):
     neighbors = neighbors_np[p_i]
     neighbors_len = num_adjs[p_i]
@@ -309,8 +303,9 @@ def solve_constraints():
             pos[idx1] -= 0.5 * invM1 * l * gradient
 
 
-def solve_l1_constraint(c_l1, c_l1_rl, q_i, fine_coarse_index_map,
+def solve_l1_constraint(c_l1, c_l1_rl, fine_coarse_index_map,
                         find_coarse_weight_map):
+    q_i = pos.to_numpy()
     for i in range(c_l1.shape[0]):
         idx0, idx1 = c_l1[i]
         invM0, invM1 = inv_mass[idx0], inv_mass[idx1]
@@ -341,7 +336,7 @@ def solve_l1_constraint(c_l1, c_l1_rl, q_i, fine_coarse_index_map,
 def correction_l0(fp: ti.types.ndarray(), fc: ti.types.ndarray()):
     for p in fp:
         if inv_mass[p] != 0.0:
-            pos[p] -= ti.Vector([fc[p, 0], fc[p, 1], fc[p, 2]])
+            pos[p] -= 0.4 * ti.Vector([fc[p, 0], fc[p, 1], fc[p, 2]])
 
 
 @ti.kernel
@@ -361,11 +356,10 @@ def collision():
 def step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map):
     semi_euler()
     for i in range(MaxIte):
-        q_i = pos.to_numpy()
-        solve_constraints()
         fine_particles, fine_corrections = solve_l1_constraint(
-            c_l1, c_l1_rl, q_i, fine_coarse_index_map, find_coarse_weight_map)
+            c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map)
         correction_l0(fine_particles, fine_corrections)
+        solve_constraints()
         collision()
     update_vel()
 
@@ -380,8 +374,7 @@ def init():
     init_neighbors()
     particle_restriction()
     init_particle_colors()
-    c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map = constraint_restriction(
-    )
+    c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map = constraint_restriction()
     return c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map
 
 
