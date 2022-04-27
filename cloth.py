@@ -2,7 +2,7 @@ import taichi as ti
 import numpy as np
 
 ti.init(arch=ti.cpu, dynamic_index=True)
-N = 4
+N = 7
 NV = (N + 1)**2
 NT = 2 * N**2
 NE = 2 * N * (N + 1) + N**2
@@ -15,7 +15,7 @@ inv_mass = ti.field(ti.f32, NV)
 vel = ti.Vector.field(3, ti.f32, NV)
 rest_len = ti.field(ti.f32, NE)
 h = 0.01
-MaxIte = 30
+MaxIte = 10
 
 paused = ti.field(ti.i32, shape=())
 
@@ -280,7 +280,7 @@ def constraint_restriction():
 
 @ti.kernel
 def semi_euler():
-    gravity = ti.Vector([0.0, -0.1, 0.0])
+    gravity = ti.Vector([0.0, -9.8, 0.0])
     for i in range(NV):
         if inv_mass[i] != 0.0:
             vel[i] += h * gravity
@@ -298,9 +298,9 @@ def solve_constraints():
         gradient = dis.normalized()
         l = -constraint / (invM0 + invM1)
         if invM0 != 0.0:
-            pos[idx0] += 0.5 * invM0 * l * gradient
+            pos[idx0] += invM0 * l * gradient
         if invM1 != 0.0:
-            pos[idx1] -= 0.5 * invM1 * l * gradient
+            pos[idx1] -= invM1 * l * gradient
 
 
 def solve_l1_constraint(c_l1, c_l1_rl, fine_coarse_index_map,
@@ -336,7 +336,7 @@ def solve_l1_constraint(c_l1, c_l1_rl, fine_coarse_index_map,
 def correction_l0(fp: ti.types.ndarray(), fc: ti.types.ndarray()):
     for p in fp:
         if inv_mass[fp[p]] != 0.0:
-            pos[fp[p]] += ti.Vector([fc[p, 0], fc[p, 1], fc[p, 2]])
+            pos[fp[p]] += 0.5 * ti.Vector([fc[p, 0], fc[p, 1], fc[p, 2]])
 
 
 @ti.kernel
@@ -360,7 +360,7 @@ def step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map):
             c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map)
         correction_l0(fine_particles, fine_corrections)
         solve_constraints()
-        collision()
+        # collision()
     update_vel()
 
 
@@ -387,7 +387,7 @@ camera.position(0.5, 0.0, 2.5)
 camera.lookat(0.5, 0.5, 0.0)
 camera.fov(90)
 
-paused[None] = 1
+paused[None] = 0
 while window.running:
     for e in window.get_events(ti.ui.PRESS):
         if e.key in [ti.ui.ESCAPE]:
@@ -397,7 +397,7 @@ while window.running:
 
     if not paused[None]:
         step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map)
-        paused[None] = not paused[None]
+        # paused[None] = not paused[None]
 
     camera.track_user_inputs(window, movement_speed=0.003, hold_key=ti.ui.RMB)
     scene.set_camera(camera)
