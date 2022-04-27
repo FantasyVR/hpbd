@@ -15,7 +15,7 @@ inv_mass = ti.field(ti.f32, NV)
 vel = ti.Vector.field(3, ti.f32, NV)
 rest_len = ti.field(ti.f32, NE)
 h = 0.01
-MaxIte = 100
+MaxIte = 30
 
 paused = ti.field(ti.i32, shape=())
 
@@ -305,38 +305,38 @@ def solve_constraints():
 
 def solve_l1_constraint(c_l1, c_l1_rl, fine_coarse_index_map,
                         find_coarse_weight_map):
-    q_i = pos.to_numpy()
+    positions = pos.to_numpy()
     for i in range(c_l1.shape[0]):
         idx0, idx1 = c_l1[i]
         invM0, invM1 = inv_mass[idx0], inv_mass[idx1]
-        dis = q_i[idx0] - q_i[idx1]
+        dis = positions[idx0] - positions[idx1]
         constraint = np.linalg.norm(dis) - c_l1_rl[i]
         gradient = dis / np.linalg.norm(dis)
         l = -constraint / (invM0 + invM1)
         if invM0 != 0.0:
-            q_i[idx0] += 0.5 * invM0 * l * gradient
+            positions[idx0] += 0.5 * invM0 * l * gradient
         if invM1 != 0.0:
-            q_i[idx1] -= 0.5 * invM1 * l * gradient
+            positions[idx1] -= 0.5 * invM1 * l * gradient
     # compute correction from l1 to l0
     fine_particles = []
     fine_corrections = []
-    positions = pos.to_numpy()
+    q_j = pos.to_numpy()
     for fp in fine_coarse_index_map:
         coarse_neighbors = fine_coarse_index_map[fp]
         coarse_wights = find_coarse_weight_map[fp]
         correction = np.zeros(shape=3, dtype=np.float32)
         for idx, p in enumerate(coarse_neighbors):
-            correction += coarse_wights[idx] * (positions[p] - q_i[p])
+            correction += coarse_wights[idx] * (positions[p] - q_j[p])
         fine_particles.append(fp)
         fine_corrections.append(correction)
-    return np.asarray(fine_particles), np.asarray(fine_corrections)
+    return np.asarray(fine_particles, dtype=np.int32), np.asarray(fine_corrections)
 
 
 @ti.kernel
 def correction_l0(fp: ti.types.ndarray(), fc: ti.types.ndarray()):
     for p in fp:
-        if inv_mass[p] != 0.0:
-            pos[p] -= 0.4 * ti.Vector([fc[p, 0], fc[p, 1], fc[p, 2]])
+        if inv_mass[fp[p]] != 0.0:
+            pos[fp[p]] += ti.Vector([fc[p, 0], fc[p, 1], fc[p, 2]])
 
 
 @ti.kernel
