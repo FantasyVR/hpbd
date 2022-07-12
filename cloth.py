@@ -3,7 +3,7 @@ import numpy as np
 import os
 
 ti.init(arch=ti.cpu, dynamic_index=True)
-N = 7
+N = 50
 NV = (N + 1)**2
 NT = 2 * N**2
 NE = 2 * N * (N + 1) + N**2
@@ -24,7 +24,7 @@ paused = ti.field(ti.i32, shape=())
 # Particle restriction parameter
 K = 2
 # Each element store neighbor's indices, adj means adjacent
-adj_vertices = ti.Vector.field(8, ti.i32, shape=NV)
+adj_vertices = ti.Vector.field(15, ti.i32, shape=NV)
 # Store number of neighbors
 adj_len = ti.field(ti.i32, shape=NV)
 # Store whether a particle is coarse(-1) or fine(1)
