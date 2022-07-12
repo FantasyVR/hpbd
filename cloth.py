@@ -1,5 +1,6 @@
 import taichi as ti
 import numpy as np
+import os
 
 ti.init(arch=ti.cpu, dynamic_index=True)
 N = 7
@@ -306,9 +307,10 @@ def solve_constraints():
 def solve_l1_constraint(c_l1, c_l1_rl, fine_coarse_index_map,
                         find_coarse_weight_map):
     positions = pos.to_numpy()
+    im =  inv_mass.to_numpy()
     for i in range(c_l1.shape[0]):
         idx0, idx1 = c_l1[i]
-        invM0, invM1 = inv_mass[idx0], inv_mass[idx1]
+        invM0, invM1 = im[idx0], im[idx1]
         dis = positions[idx0] - positions[idx1]
         constraint = np.linalg.norm(dis) - c_l1_rl[i]
         gradient = dis / np.linalg.norm(dis)
@@ -378,32 +380,52 @@ def init():
     return c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map
 
 
+
 c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map = init()
-window = ti.ui.Window("Display Mesh", (1024, 1024))
-canvas = window.get_canvas()
-scene = ti.ui.Scene()
-camera = ti.ui.make_camera()
-camera.position(0.5, 0.0, 2.5)
-camera.lookat(0.5, 0.5, 0.0)
-camera.fov(90)
+frame, max_frame = 0, 500
+dir = "hpbd_output"
+if not os.path.exists(dir):
+    os.makedirs(dir)
 
-paused[None] = 0
-while window.running:
-    for e in window.get_events(ti.ui.PRESS):
-        if e.key in [ti.ui.ESCAPE]:
-            exit()
-    if window.is_pressed(ti.ui.SPACE):
-        paused[None] = not paused[None]
+for i in range(max_frame):
+    step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map)
+    file_name = f"{dir}/cloth_obj_{frame}.obj"
+    with open(file_name, 'w') as obj:
+        positions = pos.to_numpy()
+        triangles = tri.to_numpy()
+        for v in positions:
+            obj.write(f"v {v[0]} {v[1]} {v[2]}\n" )
+        for f in range(NT):
+            obj.write(f"f {triangles[3 * f]+1} {triangles[3 * f+1]+1} {triangles[3 * f+2]+1}\n")
 
-    if not paused[None]:
-        step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map)
-        # paused[None] = not paused[None]
+    frame += 1
 
-    camera.track_user_inputs(window, movement_speed=0.003, hold_key=ti.ui.RMB)
-    scene.set_camera(camera)
-    scene.point_light(pos=(0.5, 1, 2), color=(1, 1, 1))
-
-    scene.mesh(pos, tri, color=(0.0, 1.0, 0.0), two_sided=True)
-    scene.particles(pos, radius=0.04, per_vertex_color=per_vertex_color)
-    canvas.scene(scene)
-    window.show()
+#c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map = init()
+#window = ti.ui.Window("Display Mesh", (1024, 1024))
+#canvas = window.get_canvas()
+#scene = ti.ui.Scene()
+#camera = ti.ui.make_camera()
+#camera.position(0.5, 0.0, 2.5)
+#camera.lookat(0.5, 0.5, 0.0)
+#camera.fov(90)
+#
+#paused[None] = 0
+#while window.running:
+#    for e in window.get_events(ti.ui.PRESS):
+#        if e.key in [ti.ui.ESCAPE]:
+#            exit()
+#    if window.is_pressed(ti.ui.SPACE):
+#        paused[None] = not paused[None]
+#
+#    if not paused[None]:
+#        step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map)
+#        # paused[None] = not paused[None]
+#
+#    camera.track_user_inputs(window, movement_speed=0.003, hold_key=ti.ui.RMB)
+#    scene.set_camera(camera)
+#    scene.point_light(pos=(0.5, 1, 2), color=(1, 1, 1))
+#
+#    scene.mesh(pos, tri, color=(0.0, 1.0, 0.0), two_sided=True)
+#    scene.particles(pos, radius=0.04, per_vertex_color=per_vertex_color)
+#    canvas.scene(scene)
+#    window.show()
