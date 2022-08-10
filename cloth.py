@@ -1,9 +1,11 @@
 import taichi as ti
 import numpy as np
+
 import os
+import argparse
 
 ti.init(arch=ti.cpu, dynamic_index=True)
-N = 50
+N = 10
 NV = (N + 1)**2
 NT = 2 * N**2
 NE = 2 * N * (N + 1) + N**2
@@ -219,10 +221,14 @@ def remove_constraint(p_i, p_j, c_l1, c_l1_rl, adj_matrix, num_adjs):
         if (c_d1 == p_i and c_d2 == p_j) or (c_d1 == p_j and c_d2 == p_i):
             num_adjs[c_d1] -= 1
             num_adjs[c_d2] -= 1
-            idx1, idx2 = np.where(adj_matrix[c_d1] == c_d2)[0][0], np.where(adj_matrix[c_d2] == c_d1)[0][0]
-            adj_matrix[c_d1][idx1:] = np.append(adj_matrix[c_d1, idx1+1:], np.array([-1]))
-            adj_matrix[c_d2][idx2:] = np.append(adj_matrix[c_d2, idx2+1:], np.array([-1]))
-            return np.delete(c_l1, idx, 0), np.delete(c_l1_rl, idx, 0), adj_matrix, num_adjs
+            idx1, idx2 = np.where(adj_matrix[c_d1] == c_d2)[0][0], np.where(
+                adj_matrix[c_d2] == c_d1)[0][0]
+            adj_matrix[c_d1][idx1:] = np.append(adj_matrix[c_d1, idx1 + 1:],
+                                                np.array([-1]))
+            adj_matrix[c_d2][idx2:] = np.append(adj_matrix[c_d2, idx2 + 1:],
+                                                np.array([-1]))
+            return np.delete(c_l1, idx, 0), np.delete(c_l1_rl, idx,
+                                                      0), adj_matrix, num_adjs
     return c_l1, c_l1_rl, adj_matrix, num_adjs
 
 
@@ -232,8 +238,8 @@ def add_constraint(p_k, p_j, c_l1, c_l1_rl, adj_matrix, num_adjs, pos_np):
     new_c_l1_rl = np.append(c_l1_rl, new_c_rest_len)
     num_adjs[p_k] += 1
     num_adjs[p_j] += 1
-    adj_matrix[p_k][num_adjs[p_k]-1] = p_j
-    adj_matrix[p_j][num_adjs[p_j]-1] = p_k
+    adj_matrix[p_k][num_adjs[p_k] - 1] = p_j
+    adj_matrix[p_j][num_adjs[p_j] - 1] = p_k
     return new_c_l1, new_c_l1_rl, adj_matrix, num_adjs
 
 
@@ -264,18 +270,22 @@ def constraint_restriction():
                                                  num_adjs, is_fine_np)
         adj_particles = adj_matrix[p_i]
         np_len = num_adjs[p_i]
-        k  = 0
+        k = 0
         while k < np_len and adj_particles[k] != -1:
             p_k = adj_particles[k]
             if p_k == p_j:
                 # remove c(p_i, p_j)
-                c_l1, c_l1_rl, adj_matrix, num_adjs = remove_constraint(p_i, p_j, c_l1, c_l1_rl, adj_matrix, num_adjs)
+                c_l1, c_l1_rl, adj_matrix, num_adjs = remove_constraint(
+                    p_i, p_j, c_l1, c_l1_rl, adj_matrix, num_adjs)
             elif p_k in adj_matrix[p_j]:
                 # p_k is p_j's neighbor
-                c_l1, c_l1_rl, adj_matrix, num_adjs = remove_constraint(p_i, p_k, c_l1, c_l1_rl, adj_matrix, num_adjs)
+                c_l1, c_l1_rl, adj_matrix, num_adjs = remove_constraint(
+                    p_i, p_k, c_l1, c_l1_rl, adj_matrix, num_adjs)
             else:  # p_k is not p_j's neighbor
-                c_l1, c_l1_rl, adj_matrix, num_adjs = remove_constraint(p_i, p_k, c_l1, c_l1_rl, adj_matrix, num_adjs)
-                c_l1, c_l1_rl, adj_matrix, num_adjs = add_constraint(p_k, p_j, c_l1, c_l1_rl, adj_matrix, num_adjs, pos_np )
+                c_l1, c_l1_rl, adj_matrix, num_adjs = remove_constraint(
+                    p_i, p_k, c_l1, c_l1_rl, adj_matrix, num_adjs)
+                c_l1, c_l1_rl, adj_matrix, num_adjs = add_constraint(
+                    p_k, p_j, c_l1, c_l1_rl, adj_matrix, num_adjs, pos_np)
     return c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map
 
 
@@ -307,7 +317,7 @@ def solve_constraints():
 def solve_l1_constraint(c_l1, c_l1_rl, fine_coarse_index_map,
                         find_coarse_weight_map):
     positions = pos.to_numpy()
-    im =  inv_mass.to_numpy()
+    im = inv_mass.to_numpy()
     for i in range(c_l1.shape[0]):
         idx0, idx1 = c_l1[i]
         invM0, invM1 = im[idx0], im[idx1]
@@ -331,7 +341,8 @@ def solve_l1_constraint(c_l1, c_l1_rl, fine_coarse_index_map,
             correction += coarse_wights[idx] * (positions[p] - q_j[p])
         fine_particles.append(fp)
         fine_corrections.append(correction)
-    return np.asarray(fine_particles, dtype=np.int32), np.asarray(fine_corrections)
+    return np.asarray(fine_particles,
+                      dtype=np.int32), np.asarray(fine_corrections)
 
 
 @ti.kernel
@@ -376,56 +387,71 @@ def init():
     init_neighbors()
     particle_restriction()
     init_particle_colors()
-    c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map = constraint_restriction()
+    c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map = constraint_restriction(
+    )
     return c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument('-O',
+                    '--output-obj',
+                    action='store_true',
+                    help='output obj file')
+args, unknown = parser.parse_known_args()
+output_obj = args.output_obj
 
 c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map = init()
-frame, max_frame = 0, 500
-dir = "hpbd_output"
-if not os.path.exists(dir):
-    os.makedirs(dir)
 
-for i in range(max_frame):
-    step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map)
-    file_name = f"{dir}/cloth_obj_{frame}.obj"
-    with open(file_name, 'w') as obj:
-        positions = pos.to_numpy()
-        triangles = tri.to_numpy()
-        for v in positions:
-            obj.write(f"v {v[0]} {v[1]} {v[2]}\n" )
-        for f in range(NT):
-            obj.write(f"f {triangles[3 * f]+1} {triangles[3 * f+1]+1} {triangles[3 * f+2]+1}\n")
+if output_obj:
+    print("output obj file ...")
+    frame, max_frame = 0, 500
+    dir = "hpbd_output"
+    if not os.path.exists(dir):
+        os.makedirs(dir)
 
-    frame += 1
+    for i in range(max_frame):
+        step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map)
+        file_name = f"{dir}/cloth_obj_{frame}.obj"
+        with open(file_name, 'w') as obj:
+            positions = pos.to_numpy()
+            triangles = tri.to_numpy()
+            for v in positions:
+                obj.write(f"v {v[0]} {v[1]} {v[2]}\n")
+            for f in range(NT):
+                obj.write(
+                    f"f {triangles[3 * f]+1} {triangles[3 * f+1]+1} {triangles[3 * f+2]+1}\n"
+                )
 
-#c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map = init()
-#window = ti.ui.Window("Display Mesh", (1024, 1024))
-#canvas = window.get_canvas()
-#scene = ti.ui.Scene()
-#camera = ti.ui.make_camera()
-#camera.position(0.5, 0.0, 2.5)
-#camera.lookat(0.5, 0.5, 0.0)
-#camera.fov(90)
-#
-#paused[None] = 0
-#while window.running:
-#    for e in window.get_events(ti.ui.PRESS):
-#        if e.key in [ti.ui.ESCAPE]:
-#            exit()
-#    if window.is_pressed(ti.ui.SPACE):
-#        paused[None] = not paused[None]
-#
-#    if not paused[None]:
-#        step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map)
-#        # paused[None] = not paused[None]
-#
-#    camera.track_user_inputs(window, movement_speed=0.003, hold_key=ti.ui.RMB)
-#    scene.set_camera(camera)
-#    scene.point_light(pos=(0.5, 1, 2), color=(1, 1, 1))
-#
-#    scene.mesh(pos, tri, color=(0.0, 1.0, 0.0), two_sided=True)
-#    scene.particles(pos, radius=0.04, per_vertex_color=per_vertex_color)
-#    canvas.scene(scene)
-#    window.show()
+        frame += 1
+else:
+    print("GGUI shows the scene ...")
+    window = ti.ui.Window("Display Mesh", (1024, 1024))
+    canvas = window.get_canvas()
+    scene = ti.ui.Scene()
+    camera = ti.ui.make_camera()
+    camera.position(0.5, 0.0, 2.5)
+    camera.lookat(0.5, 0.5, 0.0)
+    camera.fov(90)
+
+    paused[None] = 0
+    while window.running:
+        for e in window.get_events(ti.ui.PRESS):
+            if e.key in [ti.ui.ESCAPE]:
+                exit()
+        if window.is_pressed(ti.ui.SPACE):
+            paused[None] = not paused[None]
+
+        if not paused[None]:
+            step(c_l1, c_l1_rl, fine_coarse_index_map, find_coarse_weight_map)
+            # paused[None] = not paused[None]
+
+        camera.track_user_inputs(window,
+                                 movement_speed=0.003,
+                                 hold_key=ti.ui.RMB)
+        scene.set_camera(camera)
+        scene.point_light(pos=(0.5, 1, 2), color=(1, 1, 1))
+
+        scene.mesh(pos, tri, color=(0.0, 1.0, 0.0), two_sided=True)
+        scene.particles(pos, radius=0.04, per_vertex_color=per_vertex_color)
+        canvas.scene(scene)
+        window.show()
